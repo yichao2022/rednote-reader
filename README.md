@@ -77,6 +77,15 @@ python -m src.video --note-id <id> --xsec-token <token> --frames 5
 
 Use a vision-capable model on the output frames to understand the video content without ever downloading the mp4 file.
 
+### Searching for notes
+
+```bash
+python -m src.search "穿搭" --max 20
+python -m src.search "武康路 街拍"
+```
+
+Returns note IDs and titles. Results can then be passed to `reader` or `images` directly — notes found via search **do not require xsec_token** for access.
+
 ## How it works
 
 1. **Playwright** launches a headless Chromium browser
@@ -93,6 +102,7 @@ rednote-reader/
 ├── src/
 │   ├── __init__.py
 │   ├── login.py      # QR code login → saves session
+│   ├── search.py     # Search notes by keyword
 │   ├── reader.py     # Text extraction
 │   ├── images.py     # Image URL extraction & download
 │   └── video.py      # Video keyframe capture
