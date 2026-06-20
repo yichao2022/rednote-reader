@@ -1,0 +1,6 @@
+*.pyc
+__pycache__/
+.env
+session.json
+/tmp/rednote_images/
+/tmp/rednote_frames/
