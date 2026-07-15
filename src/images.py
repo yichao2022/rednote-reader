@@ -8,7 +8,16 @@ Usage:
   python -m src.images --url "https://www.rednote.com/explore/..."
 """
 
-import argparse, json, os, sys, time, urllib.request, urllib.error
+import argparse
+import concurrent.futures
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,6 +28,82 @@ DEFAULT_SESSION = os.environ.get(
 OUTPUT_DIR = Path("/tmp/rednote_images")
 
 from playwright.sync_api import sync_playwright
+
+from .urls import normalize_note_url
+
+
+def download_image_async(img_url: str, output_path: Path, max_width: int = 1080) -> bool:
+    """下载单张图片并转换为 JPEG"""
+    try:
+        # 下载原图
+        req = urllib.request.Request(
+            img_url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)',
+                'Referer': 'https://www.rednote.com/'
+            }
+        )
+        
+        temp_path = str(output_path) + '.temp'
+        with urllib.request.urlopen(req, timeout=30) as response:
+            with open(temp_path, 'wb') as f:
+                f.write(response.read())
+        
+        # 转换为 JPEG (macOS sips)
+        subprocess.run([
+            'sips', '-s', 'format', 'jpeg',
+            '-s', 'formatOptions', '85',
+            '-Z', str(max_width),
+            temp_path, '--out', str(output_path)
+        ], check=True, capture_output=True)
+        
+        os.remove(temp_path)
+        return True
+        
+    except Exception as e:
+        print(f"    Error: {e}", flush=True)
+        return False
+
+
+def download_images_parallel(urls: list[str], output_dir: Path, 
+                             max_workers: int = 4,
+                             max_width: int = 1080) -> list[Path]:
+    """并行下载图片"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = []
+    
+    # 准备任务
+    tasks = []
+    for i, url in enumerate(urls):
+        output_path = output_dir / f"img_{i+1:02d}.jpg"
+        if output_path.exists():
+            print(f"  [{i+1}] 已存在，跳过")
+            downloaded.append(output_path)
+            continue
+        tasks.append((url, output_path, i+1))
+    
+    if not tasks:
+        return downloaded
+    
+    print(f"\n📥 并行下载 {len(tasks)} 张图片（{max_workers}线程）...")
+    
+    def download_task(args):
+        url, path, idx = args
+        print(f"  [{idx}] 下载中...", flush=True)
+        if download_image_async(url, path, max_width):
+            print(f"  [{idx}] ✅ 完成")
+            return path
+        else:
+            print(f"  [{idx}] ❌ 失败")
+            return None
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = executor.map(download_task, tasks)
+        for result in results:
+            if result:
+                downloaded.append(result)
+    
+    return downloaded
 
 
 def extract_images(note_id: str, xsec_token: str | None = None,
@@ -42,7 +127,11 @@ def extract_images(note_id: str, xsec_token: str | None = None,
     out = Path(output_dir) if output_dir else OUTPUT_DIR
     out.mkdir(parents=True, exist_ok=True)
 
-    base_url = url or f"https://www.rednote.com/explore/{note_id}?xsec_token={xsec_token}"
+    try:
+        base_url = normalize_note_url(url=url, note_id=note_id, xsec_token=xsec_token)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -91,17 +180,15 @@ def extract_images(note_id: str, xsec_token: str | None = None,
     result = []
     for i, img_url in enumerate(unique):
         entry = {"index": i + 1, "url": img_url, "local_path": None}
-        if download:
-            try:
-                ext = img_url.split("?")[0].split(".")[-1][:4]
-                if ext not in ("jpg", "jpeg", "png", "webp"):
-                    ext = "jpg"
-                path = out / f"img_{i+1:02d}.{ext}"
-                urllib.request.urlretrieve(img_url, path)
-                entry["local_path"] = str(path)
-            except Exception as e:
-                print(f"Download failed [{i+1}]: {e}", flush=True)
         result.append(entry)
+    
+    # 并行下载
+    if download and unique:
+        print(f"\n📥 准备下载 {len(unique)} 张图片...")
+        paths = download_images_parallel(unique, out, max_workers=4)
+        for i, path in enumerate(paths):
+            if i < len(result):
+                result[i]["local_path"] = str(path)
 
     return result
 

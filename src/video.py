@@ -18,6 +18,8 @@ FRAME_DIR = Path("/tmp/rednote_frames")
 
 from playwright.sync_api import sync_playwright
 
+from .urls import normalize_note_url
+
 
 def analyze_video(note_id: str, xsec_token: str | None = None,
                   url: str | None = None,
@@ -38,7 +40,10 @@ def analyze_video(note_id: str, xsec_token: str | None = None,
 
     FRAME_DIR.mkdir(parents=True, exist_ok=True)
 
-    base_url = url or f"https://www.rednote.com/explore/{note_id}?xsec_token={xsec_token}"
+    try:
+        base_url = normalize_note_url(url=url, note_id=note_id, xsec_token=xsec_token)
+    except ValueError as e:
+        return {"error": str(e)}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)

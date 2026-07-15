@@ -17,6 +17,8 @@ DEFAULT_SESSION = os.environ.get(
 
 from playwright.sync_api import sync_playwright
 
+from .urls import looks_like_login_wall, normalize_note_url
+
 
 def _load_session(session_file: str) -> dict | None:
     path = Path(session_file)
@@ -47,7 +49,10 @@ def read_note(note_id: str, xsec_token: str | None = None,
     if not storage:
         return {"error": "no valid session"}
 
-    base_url = url or f"https://www.rednote.com/explore/{note_id}?xsec_token={xsec_token}"
+    try:
+        base_url = normalize_note_url(url=url, note_id=note_id, xsec_token=xsec_token)
+    except ValueError as e:
+        return {"error": str(e)}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -62,14 +67,27 @@ def read_note(note_id: str, xsec_token: str | None = None,
         )
         page = ctx.new_page()
 
-        page.goto(base_url, timeout=30000)
-        page.wait_for_load_state("networkidle", timeout=20000)
-        time.sleep(4)
+        page.goto(base_url, timeout=30000, wait_until="domcontentloaded")
+        # Wait for main content (faster than networkidle + sleep)
+        try:
+            page.wait_for_selector('.note-content, .desc, .title', timeout=5000)
+        except:
+            pass  # Continue even if selector not found
 
         title = page.title()
         body = page.inner_text("body")
+        final_url = page.url
 
         browser.close()
+
+    if looks_like_login_wall(title, body):
+        return {
+            "error": (
+                "login wall detected — session may be expired, or the URL was still "
+                f"on xiaohongshu.com. Tried: {base_url} (final: {final_url}). "
+                "Re-run `python -m src.login`, or pass --note-id + --xsec-token."
+            )
+        }
 
     # Parse content
     lines = [l.strip() for l in body.split("\n")
