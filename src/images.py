@@ -32,14 +32,64 @@ from playwright.sync_api import sync_playwright
 from .urls import normalize_note_url
 
 
-def download_image_async(img_url: str, output_path: Path, max_width: int = 1080) -> bool:
-    """下载单张图片并转换为 JPEG"""
+def convert_to_no_watermark_url(img_url: str) -> str:
+    """
+    转换图片 URL 为无水印高清版本。
+    
+    策略：
+    1. 将 webpic 域名 (sns-webpic-qc.xhscdn.com) 替换为原始域名 (sns-na-i11.xhscdn.com)
+    2. 移除 URL 中的格式参数 (!h5_1080jpg 等)
+    3. 返回原始 HEIF 图片 URL（无水印 + 高清）
+    
+    Example:
+        Input:  http://sns-webpic-qc.xhscdn.com/202607161453/xxx/xxx!h5_1080jpg
+        Output: http://sns-na-i11.xhscdn.com/xxx/xxx
+    """
+    # 替换域名为原始域名
+    url = img_url.replace("sns-webpic-qc.xhscdn.com", "sns-na-i11.xhscdn.com")
+    url = url.replace("sns-web-i10.rednotecdn.com", "sns-na-i11.xhscdn.com")
+    
+    # 移除时间戳路径（如果有）
+    # 原始格式: http://sns-webpic-qc.xhscdn.com/202607161453/hash/fileid!format
+    # 目标格式: http://sns-na-i11.xhscdn.com/fileid
+    
+    # 提取 fileId（通常是最后一部分，在 ! 之前）
+    if "!" in url:
+        # 移除格式参数
+        url = url.split("!")[0]
+    
+    # 如果 URL 包含时间戳路径（/202607161453/hash/），需要提取 fileId
+    parts = url.split("/")
+    if len(parts) >= 2:
+        # 最后一部分应该是 fileId
+        file_id = parts[-1]
+        # 检查是否是合法的 fileId（通常以数字开头）
+        if file_id and len(file_id) > 20:
+            url = f"http://sns-na-i11.xhscdn.com/{file_id}"
+    
+    return url
+
+
+def download_image_async(img_url: str, output_path: Path, max_width: int = 1080, 
+                         no_watermark: bool = True) -> bool:
+    """
+    下载单张图片并转换为 JPEG
+    
+    Args:
+        img_url: 图片 URL
+        output_path: 输出路径
+        max_width: 最大宽度
+        no_watermark: 是否使用无水印高清版本（默认 True）
+    """
     try:
+        # 转换 URL（如果需要无水印版本）
+        download_url = convert_to_no_watermark_url(img_url) if no_watermark else img_url
+        
         # 下载原图
         req = urllib.request.Request(
-            img_url,
+            download_url,
             headers={
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
                 'Referer': 'https://www.rednote.com/'
             }
         )
@@ -49,13 +99,27 @@ def download_image_async(img_url: str, output_path: Path, max_width: int = 1080)
             with open(temp_path, 'wb') as f:
                 f.write(response.read())
         
-        # 转换为 JPEG (macOS sips)
-        subprocess.run([
-            'sips', '-s', 'format', 'jpeg',
-            '-s', 'formatOptions', '85',
-            '-Z', str(max_width),
-            temp_path, '--out', str(output_path)
-        ], check=True, capture_output=True)
+        # 检查文件类型
+        file_type = subprocess.run(
+            ['file', '-b', temp_path],
+            capture_output=True, text=True
+        ).stdout.strip()
+        
+        # 如果是 HEIF 格式，需要转换
+        if 'HEIF' in file_type or 'heic' in file_type.lower():
+            # 转换为 JPEG (macOS sips)
+            subprocess.run([
+                'sips', '-s', 'format', 'jpeg',
+                '-s', 'formatOptions', '95',
+                '-Z', str(max_width),
+                temp_path, '--out', str(output_path)
+            ], check=True, capture_output=True)
+        else:
+            # 已经是 JPEG，直接移动并调整大小
+            subprocess.run([
+                'sips', '-Z', str(max_width),
+                temp_path, '--out', str(output_path)
+            ], check=True, capture_output=True)
         
         os.remove(temp_path)
         return True
@@ -67,8 +131,18 @@ def download_image_async(img_url: str, output_path: Path, max_width: int = 1080)
 
 def download_images_parallel(urls: list[str], output_dir: Path, 
                              max_workers: int = 4,
-                             max_width: int = 1080) -> list[Path]:
-    """并行下载图片"""
+                             max_width: int = 1080,
+                             no_watermark: bool = True) -> list[Path]:
+    """
+    并行下载图片
+    
+    Args:
+        urls: 图片 URL 列表
+        output_dir: 输出目录
+        max_workers: 并发线程数
+        max_width: 最大宽度
+        no_watermark: 是否下载无水印版本（默认 True）
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     downloaded = []
     
@@ -85,12 +159,13 @@ def download_images_parallel(urls: list[str], output_dir: Path,
     if not tasks:
         return downloaded
     
-    print(f"\n📥 并行下载 {len(tasks)} 张图片（{max_workers}线程）...")
+    wm_status = "无水印高清" if no_watermark else "原始版本"
+    print(f"\n📥 并行下载 {len(tasks)} 张图片（{max_workers}线程，{wm_status}）...")
     
     def download_task(args):
         url, path, idx = args
         print(f"  [{idx}] 下载中...", flush=True)
-        if download_image_async(url, path, max_width):
+        if download_image_async(url, path, max_width, no_watermark):
             print(f"  [{idx}] ✅ 完成")
             return path
         else:
@@ -111,7 +186,8 @@ def extract_images(note_id: str, xsec_token: str | None = None,
                    max_images: int = 9,
                    download: bool = False,
                    output_dir: str | None = None,
-                   session_file: str | None = None) -> list[dict]:
+                   session_file: str | None = None,
+                   no_watermark: bool = True) -> list[dict]:
     """
     Extract image URLs from a rednote note.
     
@@ -184,8 +260,10 @@ def extract_images(note_id: str, xsec_token: str | None = None,
     
     # 并行下载
     if download and unique:
-        print(f"\n📥 准备下载 {len(unique)} 张图片...")
-        paths = download_images_parallel(unique, out, max_workers=4)
+        wm_text = "无水印高清" if no_watermark else "原始版本"
+        print(f"\n📥 准备下载 {len(unique)} 张图片（{wm_text}）...")
+        paths = download_images_parallel(unique, out, max_workers=4, 
+                                        no_watermark=no_watermark)
         for i, path in enumerate(paths):
             if i < len(result):
                 result[i]["local_path"] = str(path)
@@ -202,17 +280,28 @@ def main():
     parser.add_argument("--max-images", type=int, default=9)
     parser.add_argument("--download", action="store_true",
                         help="Download images to /tmp/rednote_images")
+    parser.add_argument("--no-watermark", action="store_true", default=True,
+                        help="Download no-watermark HD version (default: True)")
+    parser.add_argument("--with-watermark", action="store_true",
+                        help="Download original version with watermark")
     args = parser.parse_args()
+
+    # 处理水印选项
+    no_watermark = not args.with_watermark
 
     if args.url:
         images = extract_images("", url=args.url,
-                                max_images=args.max_images, download=args.download)
+                                max_images=args.max_images, 
+                                download=args.download,
+                                no_watermark=no_watermark)
     elif not args.xsec_token:
         print("ERROR: --xsec-token required with --note-id")
         sys.exit(1)
     else:
         images = extract_images(args.note_id, args.xsec_token,
-                                max_images=args.max_images, download=args.download)
+                                max_images=args.max_images, 
+                                download=args.download,
+                                no_watermark=no_watermark)
 
     print(f"IMAGES: {len(images)}")
     for img in images:

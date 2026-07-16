@@ -63,9 +63,21 @@ Output: title, body text, hashtags, comments.
 # Print image URLs (no download)
 python -m src.images --note-id <id> --xsec-token <token>
 
-# Or download to /tmp/rednote_images
+# Download to /tmp/rednote_images (default: no-watermark HD version)
 python -m src.images --note-id <id> --xsec-token <token> --download
+
+# Download with watermark (original web version)
+python -m src.images --note-id <id> --xsec-token <token> --download --with-watermark
 ```
+
+**Image Quality Options:**
+
+| Option | Quality | Watermark | Format | Size |
+|--------|---------|-----------|--------|------|
+| Default (no args) | HD (up to original) | ❌ No | JPEG | 2-10MB |
+| `--with-watermark` | 1080px | ✅ Yes | JPEG | ~300KB |
+
+The default `--download` now fetches **original HEIF images** from `sns-na-i11.xhscdn.com` and converts them to high-quality JPEG (95% quality). These are the original uploaded files without platform watermarks.
 
 ### Analyzing videos (no file download)
 
