@@ -89,6 +89,29 @@ python -m src.video --note-id <id> --xsec-token <token> --frames 5
 
 Use a vision-capable model on the output frames to understand the video content without ever downloading the mp4 file.
 
+### Downloading full video (with yt-dlp)
+
+To download the complete video as an MP4 file (requires `yt-dlp`):
+
+```bash
+# Install yt-dlp
+pip install yt-dlp
+
+# Download video using shortlink
+yt-dlp --cookies-from-browser chrome --referer "https://www.xiaohongshu.com/" \
+  "http://xhslink.com/o/<code>"
+
+# Or using full URL
+yt-dlp --cookies-from-browser chrome --referer "https://www.xiaohongshu.com/" \
+  "https://www.rednote.com/explore/<id>?xsec_token=<token>"
+```
+
+**Features:**
+- Downloads original MP4 file (no platform watermark)
+- Preserves original quality
+- Requires Chrome/Chromium session (already logged in)
+- Works with both xhslink shortlinks and full rednote.com URLs
+
 ### Searching for notes
 
 ```bash
